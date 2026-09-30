@@ -24,7 +24,8 @@ import { cn } from '@/lib/utils';
 import { ChevronDown, ChevronUp, ChevronRight, Filter, MessageSquare, Pin, PinOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { RowThreadDialog } from './row-thread-dialog';
-import { useThreadUnread } from '@/lib/store/thread-store';
+import { isRemarkColumn, RemarkColumnId } from '@/lib/remarks';
+import { useRemarkReadStore, useRemarkUnread } from '@/lib/store/remark-read-store';
 
 // Wide enough for the row number, the select checkbox and the thread button.
 // stickyPositions below offsets pinned columns by the same value.
@@ -88,9 +89,16 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
   const columnResizeMode = useState<ColumnResizeMode>('onChange')[0];
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowId: string } | null>(null);
   const [openFilterPopover, setOpenFilterPopover] = useState<string | null>(null);
-  // Row whose discussion thread is open. Held here rather than in the row cell
-  // so the dialog is not unmounted when the row scrolls out of the virtualiser.
-  const [threadRowId, setThreadRowId] = useState<string | null>(null);
+  // Row whose discussion thread is open, with the thread it opens on. Held here
+  // rather than in the row cell so the dialog is not unmounted when the row
+  // scrolls out of the virtualiser. Saved rows carry numeric ids despite the
+  // RowData type, so the id is kept raw for the lookup against `data` below.
+  const [thread, setThread] = useState<{ rowId: string; columnId: RemarkColumnId } | null>(null);
+  const hydrateRemarkReads = useRemarkReadStore((state) => state.hydrate);
+
+  useEffect(() => {
+    hydrateRemarkReads();
+  }, [hydrateRemarkReads]);
 
   // Memoized selection state for fast O(1) lookups - prevents lag
   const selectionState = useMemo(() => {
@@ -346,7 +354,7 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
               {!isEmptyRow && (
                 <RowThreadButton
                   row={row.original}
-                  onOpen={() => setThreadRowId(row.original.id)}
+                  onOpen={() => setThread({ rowId: row.original.id, columnId: 'ops_remarks' })}
                 />
               )}
             </div>
@@ -362,6 +370,9 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
 
     orderedColumns.forEach((colConfig) => {
       const isPinned = viewState.pinnedColumns.includes(colConfig.id);
+      // Remarks are an append-only thread, so the cell opens its chat instead of
+      // an inline editor that would overwrite the whole conversation.
+      const remarkColumn = isRemarkColumn(colConfig.id) ? colConfig.id : null;
       
       // For status column in LSD sheet, compute value based on credit_note_amount_to_customer and credit_note_refund_amount
       const isStatusColumn = colConfig.id === 'status' && config.id === 'lsd';
@@ -523,7 +534,11 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
               rowData={row.original}
               globalSearch={globalSearchRef.current}
               initialValue={isEditing ? currentEditingCell?.initialValue : undefined}
-              onEdit={() => setEditingCellRef.current({ rowId: String(row.id), columnId: column.id })}
+              onEdit={() =>
+                remarkColumn
+                  ? setThread({ rowId, columnId: remarkColumn })
+                  : setEditingCellRef.current({ rowId: String(row.id), columnId: column.id })
+              }
               onSave={(newValue) => {
                 onCellUpdateRef.current(row.id, column.id, newValue);
                 setEditingCellRef.current(null);
@@ -554,8 +569,8 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
   // Looked up from the live data rather than captured at click time, so the
   // dialog's detail rail keeps showing current values while it is open.
   const threadRow = useMemo(
-    () => (threadRowId ? data.find((row) => row.id === threadRowId) || null : null),
-    [threadRowId, data]
+    () => (thread ? data.find((row) => row.id === thread.rowId) || null : null),
+    [thread, data]
   );
 
   const table = useReactTable({
@@ -1048,6 +1063,12 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
 
   // Keyboard navigation handler
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // The thread dialog is portalled out of this container in the DOM, but React
+    // still bubbles its keystrokes here. A modal owns its own keys - otherwise
+    // sending a remark also fires the grid's Enter, undo and type-to-edit paths
+    // against whatever cell happens to be focused behind it.
+    if (thread) return;
+
     const isUndo = (e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey;
     const isRedo = (e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey));
     
@@ -1167,7 +1188,11 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
       const row = rows[focusedCell.rowIndex];
       const columnId = orderedColumns[focusedCell.colIndex]?.id;
       if (row && columnId) {
-        setEditingCell({ rowId: row.id, columnId });
+        if (isRemarkColumn(columnId)) {
+          setThread({ rowId: row.original.id, columnId });
+        } else {
+          setEditingCell({ rowId: row.id, columnId });
+        }
       }
     }
     
@@ -1184,7 +1209,7 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
       const colConfig = config.columns.find(c => c.id === columnId);
       
       // Check if the cell is editable
-      if (row && columnId && colConfig && canEdit && (colConfig.editable ?? true)) {
+      if (row && columnId && colConfig && canEdit && (colConfig.editable ?? true) && !isRemarkColumn(columnId)) {
         // Don't start typing on checkbox, user, date, dropdown cells - they have special input modes
         const nonTypableTypes = ['checkbox', 'user', 'date', 'datetime', 'dropdown', 'multiselect', 'status'];
         if (!nonTypableTypes.includes(colConfig.type)) {
@@ -1194,7 +1219,7 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
         }
       }
     }
-  }, [editingCell, focusedCell, selectionRange, setFocusedCell, setSelectionRange, moveFocus, moveToExtreme, rows, rowVirtualizer, orderedColumns, setEditingCell, clearCellSelection, handleCopy, finishRapidNav, onUndo, onRedo, config.columns, canEdit]);
+  }, [thread, editingCell, focusedCell, selectionRange, setFocusedCell, setSelectionRange, moveFocus, moveToExtreme, rows, rowVirtualizer, orderedColumns, setEditingCell, clearCellSelection, handleCopy, finishRapidNav, onUndo, onRedo, config.columns, canEdit]);
 
   // Track if we have multi-selected cells (avoid recalculating on every render)
   const hasSelectedCells = selectedCells.size > 0;
@@ -1624,8 +1649,8 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
                         }}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        {/* Fill handle - appears on focused cell */}
-                        {cellIsFocused && isDataCell && !editingCell && (
+                        {/* Fill handle - appears on focused cell, except on remarks threads */}
+                        {cellIsFocused && isDataCell && !editingCell && !isRemarkColumn(columnId) && (
                           <div
                             className="fill-handle"
                             onMouseDown={(e) => {
@@ -1701,12 +1726,14 @@ export function DataGrid({ config, data, userRole, onCellUpdate, columnVisibilit
       )}
 
       <RowThreadDialog
-        open={threadRowId !== null}
+        open={thread !== null}
         onOpenChange={(open) => {
-          if (!open) setThreadRowId(null);
+          if (!open) setThread(null);
         }}
         row={threadRow}
+        column={thread?.columnId ?? 'ops_remarks'}
         config={config}
+        onCellUpdate={onCellUpdate}
       />
     </div>
   );
@@ -1724,7 +1751,7 @@ interface RowThreadButtonProps {
  * negatively offset dot spills into the rows above and below at compact height.
  */
 function RowThreadButton({ row, onOpen }: RowThreadButtonProps) {
-  const isUnread = useThreadUnread(row);
+  const isUnread = useRemarkUnread(row);
 
   return (
     <button

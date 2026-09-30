@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { format, formatDistanceToNow, isToday, isYesterday } from 'date-fns';
-import { Eye, Lock, MessageSquare, Send, Sparkles, Zap } from 'lucide-react';
+import { format, isToday, isYesterday } from 'date-fns';
+import { MessageSquare, Send } from 'lucide-react';
 
 import {
   Dialog,
@@ -16,16 +16,19 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { getRandomAvatar } from '@/lib/config/user-avatar';
-import { buildGuestBlockReply, isThreadParticipant, personForEmail } from '@/lib/mock/row-threads';
-import { useThreadStore } from '@/lib/store/thread-store';
+import { appendRemark, parseRemarks, RemarkColumnId, RemarkMessage, REMARK_COLUMNS, remarkSnapshot } from '@/lib/remarks';
+import { useRemarkReadStore } from '@/lib/store/remark-read-store';
 import { cn } from '@/lib/utils';
-import { ColumnConfig, MediaItem, RowData, SheetConfig, ThreadMessage, ThreadVisibility } from '@/types';
+import { ColumnConfig, MediaItem, RowData, SheetConfig } from '@/types';
 
 interface RowThreadDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   row: RowData | null;
+  /** Thread the dialog opens on - the grid passes the remarks cell that was clicked. */
+  column: RemarkColumnId;
   config: SheetConfig;
+  onCellUpdate: (rowId: string, columnId: string, value: string) => void | Promise<void>;
 }
 
 // Rendered as chips in the header rather than repeated in the field list below.
@@ -82,42 +85,75 @@ function dayLabel(iso: string): string {
   return format(date, 'EEEE, dd MMM yyyy');
 }
 
-export function RowThreadDialog({ open, onOpenChange, row, config }: RowThreadDialogProps) {
+export function RowThreadDialog({ open, onOpenChange, row: activeRow, column, config, onCellUpdate }: RowThreadDialogProps) {
   const { data: session } = useSession();
-  const currentEmail = session?.user?.email || '';
+  const currentName = session?.user?.name || '';
+  const markRead = useRemarkReadStore((state) => state.markRead);
 
-  const hydrate = useThreadStore((state) => state.hydrate);
-  const openThread = useThreadStore((state) => state.openThread);
-  const addMessage = useThreadStore((state) => state.addMessage);
-  const markRead = useThreadStore((state) => state.markRead);
-  const storedThread = useThreadStore((state) => (row ? state.threads[row.id] : undefined));
+  // The content stays mounted while the close animation plays, by which point the
+  // grid has already dropped the row. Keeping the last one renders the thread the
+  // user was reading all the way out instead of flashing an empty dialog.
+  const lastRow = useRef<RowData | null>(null);
+  if (activeRow) lastRow.current = activeRow;
+  const row = activeRow ?? lastRow.current;
 
   const [draft, setDraft] = useState('');
-  const [visibility, setVisibility] = useState<ThreadVisibility>('internal');
-  const [blockedAttempts, setBlockedAttempts] = useState(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [sending, setSending] = useState(false);
+  const [activeColumn, setActiveColumn] = useState<RemarkColumnId>(column);
+  const scrollNodes = useRef<Partial<Record<RemarkColumnId, HTMLDivElement | null>>>({});
+  const seenLength = useRef<Record<RemarkColumnId, number>>({ ops_remarks: -1, vamaship_remarks: -1 });
+  const rowRef = useRef(row);
+  rowRef.current = row;
 
-  const canPost = isThreadParticipant(currentEmail);
-  const me = personForEmail(currentEmail);
+  const remarkColumns = useMemo(
+    () => REMARK_COLUMNS.filter((columnId) => config.columns.some((col) => col.id === columnId)),
+    [config.columns]
+  );
+
+  // Keyed on `open` as well, so reopening the same cell lands on its own thread
+  // even when the last visit ended on the other tab.
+  useEffect(() => {
+    if (!open) return;
+    setActiveColumn(column);
+    setDraft('');
+  }, [open, column, row?.id]);
+
+  const opsText = typeof row?.ops_remarks === 'string' ? row.ops_remarks : '';
+  const vamashipText = typeof row?.vamaship_remarks === 'string' ? row.vamaship_remarks : '';
+  const notes = typeof row?.notes === 'string' ? row.notes.trim() : '';
+  const rowId = row?.id ?? '';
+  const readKey = row ? remarkSnapshot(row) : '';
 
   useEffect(() => {
-    hydrate();
-  }, [hydrate]);
+    const current = rowRef.current;
+    if (!open || !current) return;
+    markRead(current);
+  }, [open, rowId, readKey, markRead]);
 
-  // Seeding on open (not on mount) keeps closed rows out of localStorage.
+  const threads = useMemo(() => ({
+    ops_remarks: parseRemarks(opsText, rowId),
+    vamaship_remarks: parseRemarks(vamashipText, rowId),
+  }), [opsText, vamashipText, rowId]);
+
+  const setScrollNode = useCallback((columnId: RemarkColumnId, node: HTMLDivElement | null) => {
+    scrollNodes.current[columnId] = node;
+  }, []);
+
   useEffect(() => {
-    if (!open || !row) return;
-    openThread(row);
-    markRead(row.id);
-  }, [open, row, openThread, markRead]);
-
-  const messages = useMemo(() => storedThread || [], [storedThread]);
+    seenLength.current = { ops_remarks: -1, vamaship_remarks: -1 };
+  }, [open, rowId]);
 
   useEffect(() => {
     if (!open) return;
-    const node = scrollRef.current;
-    if (node) node.scrollTop = node.scrollHeight;
-  }, [open, messages.length]);
+    const next = threads[activeColumn].length;
+    const previous = seenLength.current[activeColumn];
+    seenLength.current[activeColumn] = next;
+    if (previous === next) return;
+    const node = scrollNodes.current[activeColumn];
+    if (!node) return;
+    // First open jumps to the latest line. A new message glides there.
+    node.scrollTo({ top: node.scrollHeight, behavior: previous < 0 ? 'auto' : 'smooth' });
+  }, [open, activeColumn, threads]);
 
   const headerChips = useMemo(() => {
     if (!row) return [];
@@ -130,42 +166,30 @@ export function RowThreadDialog({ open, onOpenChange, row, config }: RowThreadDi
 
   const detailFields = useMemo(() => {
     if (!row) return [];
+    const chatColumns = new Set<string>(REMARK_COLUMNS);
     return config.columns
-      .filter((column) => !SKIPPED_COLUMN_TYPES.has(column.type))
+      .filter((column) => !SKIPPED_COLUMN_TYPES.has(column.type) && !chatColumns.has(column.id))
       .filter((column) => hasValue(row[column.id]))
       .map((column) => ({ column, value: formatFieldValue(row[column.id], column) }));
   }, [row, config.columns]);
 
-  const handleSend = useCallback(() => {
-    if (!row) return;
+  // Unsaved rows (row-*, empty-*) have no id the API accepts - update-entries
+  // silently skips them, so a message would vanish on the next refetch.
+  const canSendToRow = row !== null && (typeof row.id === 'number' || !Number.isNaN(Number(row.id)));
+
+  const handleSend = useCallback(async () => {
+    if (!row || sending || !canSendToRow || !currentName) return;
     const body = draft.trim();
     if (!body) return;
 
-    // MOCK: only the two seeded accounts can post. Everyone else gets told, in
-    // character, that the feature is not finished.
-    if (!canPost || !me) {
-      const attempt = blockedAttempts + 1;
-      setBlockedAttempts(attempt);
-      addMessage(buildGuestBlockReply(row.id, attempt));
-      markRead(row.id);
+    setSending(true);
+    try {
+      await onCellUpdate(String(row.id), activeColumn, appendRemark(row[activeColumn], body, currentName));
       setDraft('');
-      return;
+    } finally {
+      setSending(false);
     }
-
-    addMessage({
-      id: `${row.id}-live-${Date.now()}`,
-      rowId: row.id,
-      authorEmail: me.email,
-      authorName: me.name,
-      body,
-      createdAt: new Date().toISOString(),
-      kind: 'message',
-      visibility,
-    });
-    // Own post must not come back as unread on the grid badge.
-    markRead(row.id);
-    setDraft('');
-  }, [row, draft, canPost, me, blockedAttempts, addMessage, markRead, visibility]);
+  }, [row, sending, canSendToRow, currentName, draft, onCellUpdate, activeColumn]);
 
   const title = row ? String(row.shipment_no || row.awb_no || row.id) : '';
 
@@ -187,20 +211,35 @@ export function RowThreadDialog({ open, onOpenChange, row, config }: RowThreadDi
               {chip.value}
             </Badge>
           ))}
-          <Badge variant="outline" className="ml-auto gap-1 border-amber-400 text-amber-600 dark:text-amber-400">
-            <Sparkles className="h-3 w-3" />
-            Mock
-          </Badge>
         </div>
         <DialogDescription className="sr-only">
-          Discussion thread for this row. Messages are stored locally and are not sent anywhere.
+          Remarks for this shipment.
         </DialogDescription>
 
-        {/* Body */}
-        <div className="grid min-h-0 flex-1 md:grid-cols-[300px_1fr]">
-          {/* Row detail rail */}
-          <div className="hidden min-h-0 flex-col overflow-y-auto border-r bg-muted/30 md:flex">
-            <div className="px-5 py-4">
+        <div className="grid min-h-0 flex-1 grid-rows-[auto_1fr] md:grid-cols-[300px_1fr] md:grid-rows-1">
+          <div className="flex shrink-0 flex-col border-b bg-muted/30 md:min-h-0 md:overflow-y-auto md:scroll-smooth md:border-r md:border-b-0">
+            <div className="sticky top-0 z-10 flex gap-2 bg-muted/30 px-4 py-3 md:pt-4">
+              {remarkColumns.map((columnId) => {
+                const column = config.columns.find((col) => col.id === columnId);
+                const selected = activeColumn === columnId;
+                return (
+                  <Button
+                    key={columnId}
+                    type="button"
+                    size="sm"
+                    variant={selected ? 'default' : 'outline'}
+                    className="flex-1"
+                    onClick={() => {
+                      setActiveColumn(columnId);
+                      setDraft('');
+                    }}
+                  >
+                    {column?.label || columnId}
+                  </Button>
+                );
+              })}
+            </div>
+            <div className="hidden px-5 py-4 md:block">
               <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Shipment details
               </p>
@@ -220,18 +259,24 @@ export function RowThreadDialog({ open, onOpenChange, row, config }: RowThreadDi
             </div>
           </div>
 
-          {/* Thread */}
           <div className="flex min-h-0 flex-col">
-            <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-              {messages.map((message, index) => (
-                <MessageRow
-                  key={message.id}
-                  message={message}
-                  previous={messages[index - 1]}
-                  isMine={message.authorEmail === currentEmail}
-                />
-              ))}
-            </div>
+            {notes ? (
+              <div className="max-h-28 shrink-0 overflow-y-auto scroll-smooth border-b bg-muted/40 px-5 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Notes
+                </p>
+                <p className="mt-1 text-sm break-words whitespace-pre-wrap">{notes}</p>
+              </div>
+            ) : null}
+            {remarkColumns.map((columnId) => (
+              <RemarkThread
+                key={columnId}
+                columnId={columnId}
+                messages={threads[columnId]}
+                active={activeColumn === columnId}
+                onScrollRef={setScrollNode}
+              />
+            ))}
 
             {/* Composer */}
             <div className="shrink-0 border-t p-3">
@@ -250,28 +295,9 @@ export function RowThreadDialog({ open, onOpenChange, row, config }: RowThreadDi
               <div className="mt-2 flex items-center gap-2">
                 <Button
                   type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="gap-1.5 text-xs"
-                  onClick={() => setVisibility(visibility === 'internal' ? 'shipper' : 'internal')}
-                >
-                  {visibility === 'internal' ? (
-                    <>
-                      <Lock className="h-3.5 w-3.5" />
-                      Internal only
-                    </>
-                  ) : (
-                    <>
-                      <Eye className="h-3.5 w-3.5" />
-                      Visible to shipper
-                    </>
-                  )}
-                </Button>
-                <Button
-                  type="button"
                   size="sm"
                   className="ml-auto gap-1.5"
-                  disabled={draft.trim() === ''}
+                  disabled={draft.trim() === '' || sending || remarkColumns.length === 0 || !canSendToRow || !currentName}
                   onClick={handleSend}
                 >
                   <Send className="h-3.5 w-3.5" />
@@ -286,75 +312,89 @@ export function RowThreadDialog({ open, onOpenChange, row, config }: RowThreadDi
   );
 }
 
-interface MessageRowProps {
-  message: ThreadMessage;
-  previous?: ThreadMessage;
-  isMine: boolean;
+interface RemarkThreadProps {
+  columnId: RemarkColumnId;
+  messages: RemarkMessage[];
+  active: boolean;
+  onScrollRef: (columnId: RemarkColumnId, node: HTMLDivElement | null) => void;
 }
 
-function MessageRow({ message, previous, isMine }: MessageRowProps) {
-  const showDaySeparator = !previous || dayLabel(previous.createdAt) !== dayLabel(message.createdAt);
+const RemarkThread = memo(function RemarkThread({ columnId, messages, active, onScrollRef }: RemarkThreadProps) {
+  return (
+    <div
+      ref={(node) => onScrollRef(columnId, node)}
+      className={cn(
+        'min-h-0 flex-1 overflow-y-auto overscroll-contain scroll-smooth px-5 py-4',
+        !active && 'hidden'
+      )}
+    >
+      {messages.map((message, index) => (
+        <MessageRow
+          key={message.id}
+          message={message}
+          previous={messages[index - 1]}
+        />
+      ))}
+    </div>
+  );
+});
 
-  if (message.kind === 'event') {
-    return (
-      <>
-        {showDaySeparator && <DaySeparator iso={message.createdAt} />}
-        <div className="my-2 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-          <Zap className="h-3 w-3" />
-          <span>{message.body}</span>
-          <span className="opacity-60">{format(new Date(message.createdAt), 'HH:mm')}</span>
-        </div>
-      </>
-    );
-  }
+interface MessageRowProps {
+  message: RemarkMessage;
+  previous?: RemarkMessage;
+}
 
-  // Consecutive messages from the same person collapse into one block, which is
-  // what keeps a long thread readable with several participants.
+const MessageRow = memo(function MessageRow({ message, previous }: MessageRowProps) {
+  const showDaySeparator = Boolean(
+    message.createdAt && (!previous?.createdAt || dayLabel(previous.createdAt) !== dayLabel(message.createdAt))
+  );
+
   const isGrouped =
     !showDaySeparator &&
-    previous?.kind === 'message' &&
-    previous.authorEmail === message.authorEmail &&
+    previous?.authorName === message.authorName &&
+    message.authorName !== '' &&
+    Boolean(message.createdAt) &&
+    Boolean(previous?.createdAt) &&
     new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime() < 10 * 60_000;
+
+  const author = message.authorName;
 
   return (
     <>
       {showDaySeparator && <DaySeparator iso={message.createdAt} />}
       <div className={cn('flex gap-3', isGrouped ? 'mt-0.5' : 'mt-4')}>
         <div className="w-8 shrink-0">
-          {!isGrouped && (
+          {!isGrouped && author && (
             <Avatar className="h-8 w-8">
-              <AvatarImage src={getRandomAvatar(message.authorEmail)} alt={message.authorName} />
-              <AvatarFallback className="text-[11px]">{initialsFor(message.authorName)}</AvatarFallback>
+              <AvatarImage src={getRandomAvatar(author)} alt={author} />
+              <AvatarFallback className="text-[11px]">{initialsFor(author)}</AvatarFallback>
             </Avatar>
           )}
         </div>
         <div className="min-w-0 flex-1">
-          {!isGrouped && (
+          {!isGrouped && author && (
             <div className="flex items-baseline gap-2">
               <span className="text-sm font-semibold">
-                {message.authorName}
-                {isMine && <span className="ml-1 text-xs font-normal text-muted-foreground">(you)</span>}
+                {author}
               </span>
-              <span
-                className="text-xs text-muted-foreground"
-                title={format(new Date(message.createdAt), 'dd MMM yyyy, HH:mm')}
-              >
-                {formatDistanceToNow(new Date(message.createdAt), { addSuffix: true })}
-              </span>
-              {message.visibility === 'shipper' && (
-                <Badge variant="outline" className="gap-1 px-1.5 py-0 text-[10px] font-normal">
-                  <Eye className="h-2.5 w-2.5" />
-                  Shipper
-                </Badge>
-              )}
             </div>
           )}
-          <p className="text-sm break-words whitespace-pre-wrap">{message.body}</p>
+          <p className="text-sm break-words whitespace-pre-wrap">
+            {message.body}
+            {message.createdAt && (
+              <span
+                className="ml-2 text-xs text-muted-foreground"
+                title={format(new Date(message.createdAt), 'dd MMM yyyy, HH:mm')}
+              >
+                {format(new Date(message.createdAt), 'hh:mm a')}
+              </span>
+            )}
+          </p>
         </div>
       </div>
     </>
   );
-}
+});
 
 function DaySeparator({ iso }: { iso: string }) {
   return (
