@@ -1,6 +1,6 @@
 import { RowData } from '@/types';
 
-export const REMARK_COLUMNS = ['ops_remarks', 'vamaship_remarks'] as const;
+export const REMARK_COLUMNS = ['ops_remarks'] as const;
 
 export type RemarkColumnId = (typeof REMARK_COLUMNS)[number];
 
@@ -94,5 +94,5 @@ export function appendRemark(existing: unknown, body: string, authorName: string
 }
 
 export function remarkSnapshot(row: RowData): string {
-  return `${columnText(row.ops_remarks)}\n${columnText(row.vamaship_remarks)}`;
+  return columnText(row.ops_remarks);
 }

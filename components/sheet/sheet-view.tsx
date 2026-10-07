@@ -862,9 +862,7 @@ export function SheetView({ config, userRole }: SheetViewProps) {
     const escalationUpdatableFields = [
       'notes',
       'manual_case',
-      'followup_remarks',
       'ops_remarks',
-      'vamaship_remarks',
       'source_of_complaint',
       'manual_ticket_status',
       'email_subject',
@@ -1905,7 +1903,11 @@ export function SheetView({ config, userRole }: SheetViewProps) {
       const emailSubjectIndex = headers.findIndex((h: string) =>
         h === 'email_subject' || h === 'email subject' || h === 'emailsubject'
       );
+      // The column is labelled "Remarks" in the current sample sheet. The older
+      // "OPS Remarks" spellings stay accepted so files saved from the previous
+      // template still upload instead of silently dropping the column.
       const opsRemarksIndex = headers.findIndex((h: string) =>
+        h === 'remarks' ||
         h === 'ops_remarks' || h === 'ops remarks' || h === 'opsremarks'
       );
 
