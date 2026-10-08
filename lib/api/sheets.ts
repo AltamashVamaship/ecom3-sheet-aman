@@ -194,7 +194,6 @@ class SheetApiService {
     data: Array<{
       shipment_no: string | number;
       manual_case?: string | null;
-      followup_remarks?: string | null;
       [key: string]: any;
     }>
   ): Promise<ApiResponse<BulkUploadResult>> {

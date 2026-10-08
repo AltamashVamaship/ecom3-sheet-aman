@@ -101,7 +101,7 @@ export function RowThreadDialog({ open, onOpenChange, row: activeRow, column, co
   const [sending, setSending] = useState(false);
   const [activeColumn, setActiveColumn] = useState<RemarkColumnId>(column);
   const scrollNodes = useRef<Partial<Record<RemarkColumnId, HTMLDivElement | null>>>({});
-  const seenLength = useRef<Record<RemarkColumnId, number>>({ ops_remarks: -1, vamaship_remarks: -1 });
+  const seenLength = useRef<Record<RemarkColumnId, number>>({ ops_remarks: -1 });
   const rowRef = useRef(row);
   rowRef.current = row;
 
@@ -119,7 +119,6 @@ export function RowThreadDialog({ open, onOpenChange, row: activeRow, column, co
   }, [open, column, row?.id]);
 
   const opsText = typeof row?.ops_remarks === 'string' ? row.ops_remarks : '';
-  const vamashipText = typeof row?.vamaship_remarks === 'string' ? row.vamaship_remarks : '';
   const notes = typeof row?.notes === 'string' ? row.notes.trim() : '';
   const rowId = row?.id ?? '';
   const readKey = row ? remarkSnapshot(row) : '';
@@ -132,15 +131,14 @@ export function RowThreadDialog({ open, onOpenChange, row: activeRow, column, co
 
   const threads = useMemo(() => ({
     ops_remarks: parseRemarks(opsText, rowId),
-    vamaship_remarks: parseRemarks(vamashipText, rowId),
-  }), [opsText, vamashipText, rowId]);
+  }), [opsText, rowId]);
 
   const setScrollNode = useCallback((columnId: RemarkColumnId, node: HTMLDivElement | null) => {
     scrollNodes.current[columnId] = node;
   }, []);
 
   useEffect(() => {
-    seenLength.current = { ops_remarks: -1, vamaship_remarks: -1 };
+    seenLength.current = { ops_remarks: -1 };
   }, [open, rowId]);
 
   useEffect(() => {

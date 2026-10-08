@@ -179,7 +179,7 @@ export const escalationSheetConfig: SheetConfig = {
     },
     {
       id: 'ops_remarks',
-      label: 'OPS Remarks',
+      label: 'Remarks',
       type: 'text',
       width: 200,
       required: false,
@@ -192,22 +192,6 @@ export const escalationSheetConfig: SheetConfig = {
       width: 200,
       required: false,
       editable: false,
-    },
-    {
-      id: 'followup_remarks',
-      label: 'Followup Remarks',
-      type: 'text',
-      width: 200,
-      required: false,
-      editable: true,
-    },
-    {
-      id: 'vamaship_remarks',
-      label: 'Vamaship Remarks',
-      type: 'text',
-      width: 200,
-      required: false,
-      editable: true,
     },
     {
       id: 'created_at',
