@@ -863,6 +863,7 @@ export function SheetView({ config, userRole }: SheetViewProps) {
       'notes',
       'manual_case',
       'ops_remarks',
+      'vamaship_remarks',
       'source_of_complaint',
       'manual_ticket_status',
       'email_subject',
@@ -1906,9 +1907,20 @@ export function SheetView({ config, userRole }: SheetViewProps) {
       // The column is labelled "Remarks" in the current sample sheet. The older
       // "OPS Remarks" spellings stay accepted so files saved from the previous
       // template still upload instead of silently dropping the column.
+      // The internal column has been labelled "OPS Remarks", then "Remarks", and
+      // is now "Internal Remarks". All three stay accepted so files saved from an
+      // older template still upload instead of silently dropping the column.
       const opsRemarksIndex = headers.findIndex((h: string) =>
+        h === 'internal remarks' || h === 'internal_remarks' ||
         h === 'remarks' ||
         h === 'ops_remarks' || h === 'ops remarks' || h === 'opsremarks'
+      );
+      // The shipper-visible column. Its content reaches the customer panel, so it
+      // is kept separate from the internal one all the way through the upload.
+      const vamashipRemarksIndex = headers.findIndex((h: string) =>
+        h === 'remarks for external customer' ||
+        h === 'external remarks' ||
+        h === 'vamaship_remarks' || h === 'vamaship remarks' || h === 'vamashipremarks'
       );
 
       if (shipmentNoIndex === -1) {
@@ -1937,6 +1949,7 @@ export function SheetView({ config, userRole }: SheetViewProps) {
         source_of_complaint?: string | null;
         email_subject?: string | null;
         ops_remarks?: string | null;
+        vamaship_remarks?: string | null;
       }> = [];
 
       // Process data rows (skip header row)
@@ -1979,6 +1992,10 @@ export function SheetView({ config, userRole }: SheetViewProps) {
         // Timestamped and appended server side, so send the raw text.
         if (opsRemarksIndex !== -1 && row[opsRemarksIndex]) {
           record.ops_remarks = String(row[opsRemarksIndex]).trim() || null;
+        }
+
+        if (vamashipRemarksIndex !== -1 && row[vamashipRemarksIndex]) {
+          record.vamaship_remarks = String(row[vamashipRemarksIndex]).trim() || null;
         }
 
         uploadData.push(record);
