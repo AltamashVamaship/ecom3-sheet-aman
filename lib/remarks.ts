@@ -1,5 +1,7 @@
 import { RowData } from '@/types';
 
+// Only the internal column is a thread. vamaship_remarks is an ordinary editable
+// cell, so it is deliberately absent here.
 export const REMARK_COLUMNS = ['ops_remarks'] as const;
 
 export type RemarkColumnId = (typeof REMARK_COLUMNS)[number];
